@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SI-DESA WIYUGOBAK - Mamberamo Tengah</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, getDocs, updateDoc, deleteDoc, onSnapshot, query, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Konfigurasi Firebase dari Environment
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'wiyugobak-system-2026';
+
+        // Assets
+        const LOGO_KAB = "https://i.ibb.co.com/21DGH25Q/Lambang-Kabupaten-Mamberamo-Tengah.webp";
+        const LOGO_SURAT = "https://i.ibb.co.com/1YbhTWMf/Gemini-Generated-Image-vqv2nzvqv2nzvqv2.png";
+        const BG_DASHBOARD = "https://i.ibb.co.com/JX46wNx/20221204-23-12-010.jpg";
+
+        // State
+        let currentUser = null;
+        let activeTab = 'dashboard';
+        let editMode = null; // Store ID of document being edited
+
+        // Auth Init
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) { console.error("Auth Error", e); }
+        }
+
+        // Firestore Path Helper (Rule 1)
+        const getCol = (name) => collection(db, 'artifacts', appId, 'public', 'data', name);
+
+        // Core App Logic
+        window.switchTab = (tab) => {
+            activeTab = tab;
+            renderApp();
+        };
+
+        function renderApp() {
+            const root = document.getElementById('app-root');
+            if (!localStorage.getItem('desa_logged_in')) {
+                root.innerHTML = renderLogin();
+                return;
+            }
+
+            root.innerHTML = `
+                <div class="flex h-screen bg-slate-50 overflow-hidden">
+                    <!-- Sidebar -->
+                    <aside class="w-72 bg-emerald-950 text-white flex flex-col shadow-2xl">
+                        <div class="p-6 text-center border-b border-emerald-800/50">
+                            <img src="${LOGO_KAB}" class="w-20 h-24 mx-auto mb-3 drop-shadow-lg" alt="Logo">
+                            <h1 class="text-xs font-bold leading-tight opacity-90 uppercase">Pemerintah Kab. Mamberamo Tengah<br>Distrik Kobakma</h1>
+                            <div class="mt-2 text-[10px] bg-emerald-500/20 py-1 rounded-full text-emerald-400 border border-emerald-500/30">DESA WIYUGOBAK</div>
+                        </div>
+                        <nav class="flex-1 overflow-y-auto p-4 space-y-1 custom-scrollbar">
+                            ${menuBtn('dashboard', 'fas fa-th-large', 'Dashboard')}
+                            ${menuBtn('penduduk', 'fas fa-users-viewfinder', 'Data Penduduk')}
+                            ${menuBtn('perangkat', 'fas fa-user-shield', 'Perangkat Desa')}
+                            ${menuBtn('lmd', 'fas fa-handshake', 'Anggota LMD')}
+                            ${menuBtn('surat', 'fas fa-print', 'Cetak Surat')}
+                            ${menuBtn('keuangan', 'fas fa-file-invoice-dollar', 'Laporan Keuangan')}
+                            ${menuBtn('pembangunan', 'fas fa-hard-hat', 'Pembangunan')}
+                            <div class="pt-10">
+                                <button onclick="handleLogout()" class="w-full flex items-center p-3 text-red-400 hover:bg-red-500/10 rounded-xl transition">
+                                    <i class="fas fa-power-off w-8"></i> Keluar Sistem
+                                </button>
+                            </div>
+                        </nav>
+                    </aside>
+
+                    <!-- Content Area -->
+                    <main class="flex-1 flex flex-col min-w-0">
+                        <header class="h-16 bg-white border-b flex items-center justify-between px-8">
+                            <h2 class="font-bold text-slate-700 text-lg uppercase tracking-wider" id="page-title">${activeTab}</h2>
+                            <div class="flex items-center gap-3">
+                                <div class="text-right hidden sm:block">
+                                    <p class="text-xs font-bold text-slate-800">Administrator</p>
+                                    <p class="text-[10px] text-emerald-600 font-semibold">Online</p>
+                                </div>
+                                <div class="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold border-2 border-emerald-200">A</div>
+                            </div>
+                        </header>
+                        <div class="flex-1 overflow-y-auto p-6 md:p-10" id="main-content"></div>
+                    </main>
+                </div>
+            `;
+            loadTabContent();
+        }
+
+        function menuBtn(id, icon, label) {
+            const active = activeTab === id ? 'bg-emerald-600 text-white shadow-lg' : 'text-emerald-100/70 hover:bg-emerald-900 hover:text-white';
+            return `<button onclick="switchTab('${id}')" class="w-full flex items-center p-3 rounded-xl transition-all duration-200 ${active}">
+                <i class="${icon} w-8 text-lg"></i> <span class="text-sm font-semibold">${label}</span>
+            </button>`;
+        }
+
+        function renderLogin() {
+            return `
+                <div class="min-h-screen flex items-center justify-center bg-emerald-950 relative overflow-hidden">
+                    <div class="absolute inset-0 opacity-20 bg-cover bg-center" style="background-image: url('${BG_DASHBOARD}')"></div>
+                    <div class="relative bg-white/95 backdrop-blur-xl p-8 rounded-3xl shadow-2xl w-full max-w-md border border-white/20">
+                        <div class="text-center mb-8">
+                            <img src="${LOGO_KAB}" class="w-20 mx-auto mb-4" alt="Logo">
+                            <h2 class="text-2xl font-black text-slate-800">SI-DESA WIYUGOBAK</h2>
+                            <p class="text-slate-500 text-sm">Silahkan masuk untuk mengelola data</p>
+                        </div>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1 uppercase">Username</label>
+                                <input type="text" id="login_user" class="w-full p-3 bg-slate-100 border-none rounded-xl focus:ring-2 focus:ring-emerald-500" placeholder="admin">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1 uppercase">Password</label>
+                                <input type="password" id="login_pass" class="w-full p-3 bg-slate-100 border-none rounded-xl focus:ring-2 focus:ring-emerald-500" placeholder="••••••••">
+                            </div>
+                            <button onclick="handleLogin()" class="w-full bg-emerald-600 text-white py-4 rounded-xl font-bold shadow-lg shadow-emerald-600/30 hover:bg-emerald-700 transition-all active:scale-95">MASUK SEKARANG</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        window.handleLogin = () => {
+            const u = document.getElementById('login_user').value;
+            const p = document.getElementById('login_pass').value;
+            if (u === 'admin' && p === 'admin') {
+                localStorage.setItem('desa_logged_in', 'true');
+                renderApp();
+            } else {
+                showToast("Login Gagal! Gunakan admin/admin", "error");
+            }
+        };
+
+        window.handleLogout = () => {
+            localStorage.removeItem('desa_logged_in');
+            renderApp();
+        };
+
+        // Tab Content Loaders
+        async function loadTabContent() {
+            const container = document.getElementById('main-content');
+            
+            if (activeTab === 'dashboard') {
+                container.innerHTML = `
+                    <div class="space-y-8 animate-fadeIn">
+                        <div class="relative h-64 rounded-3xl overflow-hidden shadow-2xl group">
+                            <img src="${BG_DASHBOARD}" class="w-full h-full object-cover transition duration-700 group-hover:scale-110">
+                            <div class="absolute inset-0 bg-gradient-to-t from-emerald-950 via-emerald-900/40 to-transparent flex flex-col justify-end p-8 text-white">
+                                <h3 class="text-3xl font-black">Selamat Datang, Admin!</h3>
+                                <p class="opacity-80 max-w-xl text-sm">Sistem Informasi Manajemen Data Desa Wiyugobak, Distrik Kobakma, Kabupaten Mamberamo Tengah.</p>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                            <div class="bg-white p-6 rounded-2xl shadow-sm border-b-4 border-emerald-500">
+                                <div class="flex items-center gap-4">
+                                    <div class="p-3 bg-emerald-100 text-emerald-600 rounded-xl"><i class="fas fa-users text-xl"></i></div>
+                                    <div><p class="text-slate-500 text-xs font-bold uppercase">Penduduk</p><h4 class="text-2xl font-black" id="count-penduduk">0</h4></div>
+                                </div>
+                            </div>
+                            <div class="bg-white p-6 rounded-2xl shadow-sm border-b-4 border-blue-500">
+                                <div class="flex items-center gap-4">
+                                    <div class="p-3 bg-blue-100 text-blue-600 rounded-xl"><i class="fas fa-user-tie text-xl"></i></div>
+                                    <div><p class="text-slate-500 text-xs font-bold uppercase">Perangkat</p><h4 class="text-2xl font-black" id="count-perangkat">0</h4></div>
+                                </div>
+                            </div>
+                            <div class="bg-white p-6 rounded-2xl shadow-sm border-b-4 border-orange-500">
+                                <div class="flex items-center gap-4">
+                                    <div class="p-3 bg-orange-100 text-orange-600 rounded-xl"><i class="fas fa-money-bill-wave text-xl"></i></div>
+                                    <div><p class="text-slate-500 text-xs font-bold uppercase">Transaksi</p><h4 class="text-2xl font-black" id="count-keuangan">0</h4></div>
+                                </div>
+                            </div>
+                            <div class="bg-white p-6 rounded-2xl shadow-sm border-b-4 border-purple-500">
+                                <div class="flex items-center gap-4">
+                                    <div class="p-3 bg-purple-100 text-purple-600 rounded-xl"><i class="fas fa-hammer text-xl"></i></div>
+                                    <div><p class="text-slate-500 text-xs font-bold uppercase">Proyek</p><h4 class="text-2xl font-black" id="count-pembangunan">0</h4></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-white p-4 rounded-3xl shadow-sm overflow-hidden border">
+                            <div class="p-4 border-b flex items-center justify-between">
+                                <h4 class="font-bold text-slate-700"><i class="fas fa-map-location-dot mr-2 text-emerald-600"></i> PETA KECAMATAN KOBAKMA</h4>
+                                <a href="https://kobakmaen.blogspot.com" target="_blank" class="text-xs text-emerald-600 hover:underline">kobakmaen.blogspot.com</a>
+                            </div>
+                            <iframe src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d64118.65866429523!2d139.2051996585671!3d-3.7015664417261673!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x68305f87b8d43d39%3A0xc343547f8832a884!2sKobakma%2C%20Mamberamo%20Tengah%2C%20Papua%20Pegunungan!5e0!3m2!1sid!2sid!4v1700000000000!5m2!1sid!2sid" width="100%" height="400" style="border:0;" allowfullscreen="" loading="lazy"></iframe>
+                        </div>
+                    </div>
+                `;
+                updateDashboardStats();
+            } else if (['penduduk', 'perangkat', 'lmd'].includes(activeTab)) {
+                renderDataTable(activeTab);
+            } else if (activeTab === 'keuangan') {
+                renderKeuangan();
+            } else if (activeTab === 'pembangunan') {
+                renderPembangunan();
+            } else if (activeTab === 'surat') {
+                renderSuratSystem();
+            }
+        }
+
+        async function updateDashboardStats() {
+            const snapP = await getDocs(getCol('penduduk'));
+            const snapD = await getDocs(getCol('perangkat'));
+            const snapK = await getDocs(getCol('keuangan'));
+            const snapB = await getDocs(getCol('pembangunan'));
+            document.getElementById('count-penduduk').innerText = snapP.size;
+            document.getElementById('count-perangkat').innerText = snapD.size;
+            document.getElementById('count-keuangan').innerText = snapK.size;
+            document.getElementById('count-pembangunan').innerText = snapB.size;
+        }
+
+        // --- DATA TABLE RENDERER ---
+        function renderDataTable(type) {
+            const container = document.getElementById('main-content');
+            const title = type === 'penduduk' ? 'Database Penduduk' : (type === 'perangkat' ? 'Perangkat Desa' : 'Anggota LMD');
+            
+            container.innerHTML = `
+                <div class="bg-white rounded-3xl shadow-sm border overflow-hidden">
+                    <div class="p-6 border-b flex justify-between items-center bg-slate-50/50">
+                        <div>
+                            <h3 class="font-black text-slate-800 text-xl">${title}</h3>
+                            <p class="text-xs text-slate-500">Kelola informasi ${title.toLowerCase()} Desa Wiyugobak</p>
+                        </div>
+                        <button onclick="showFormModal('${type}')" class="bg-emerald-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-emerald-700 transition flex items-center gap-2">
+                            <i class="fas fa-plus"></i> Tambah Data
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead>
+                                <tr class="bg-slate-100 text-slate-600 text-[10px] uppercase font-black tracking-widest border-b">
+                                    <th class="px-6 py-4 text-left">Foto</th>
+                                    <th class="px-6 py-4 text-left">Nama Lengkap</th>
+                                    <th class="px-6 py-4 text-left">NIK</th>
+                                    <th class="px-6 py-4 text-left">${type === 'penduduk' ? 'Pekerjaan' : 'Jabatan'}</th>
+                                    <th class="px-6 py-4 text-center">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body" class="divide-y divide-slate-100">
+                                <tr><td colspan="5" class="py-20 text-center text-slate-400 italic">Memuat data...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+
+            onSnapshot(getCol(type), (snap) => {
+                const tbody = document.getElementById('table-body');
+                tbody.innerHTML = '';
+                if(snap.empty) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="py-20 text-center text-slate-400">Belum ada data. Silahkan tambah data baru.</td></tr>`;
+                    return;
+                }
+                snap.forEach(docSnap => {
+                    const data = docSnap.data();
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-emerald-50/30 transition">
+                            <td class="px-6 py-4">
+                                <img src="${data.foto || 'https://via.placeholder.com/100?text=No+Photo'}" class="w-12 h-12 rounded-xl object-cover border-2 border-white shadow-sm ring-1 ring-slate-100">
+                            </td>
+                            <td class="px-6 py-4">
+                                <p class="font-bold text-slate-800">${data.nama}</p>
+                                <p class="text-[10px] text-slate-500">${data.jk || 'Laki-laki'}</p>
+                            </td>
+                            <td class="px-6 py-4 font-mono text-xs text-slate-600 tracking-wider">${data.nik}</td>
+                            <td class="px-6 py-4 font-semibold text-emerald-700 text-sm">${data.jabatan || data.pekerjaan || '-'}</td>
+                            <td class="px-6 py-4 text-center">
+                                <div class="flex justify-center gap-2">
+                                    <button onclick="showFormModal('${type}', '${docSnap.id}')" class="w-8 h-8 rounded-lg bg-blue-100 text-blue-600 hover:bg-blue-600 hover:text-white transition"><i class="fas fa-edit text-xs"></i></button>
+                                    <button onclick="handleDelete('${type}', '${docSnap.id}')" class="w-8 h-8 rounded-lg bg-red-100 text-red-600 hover:bg-red-600 hover:text-white transition"><i class="fas fa-trash text-xs"></i></button>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                });
+            }, (err) => showToast("Error Firestore: " + err.message, "error"));
+        }
+
+        // --- FORM MODAL SYSTEM ---
+        window.showFormModal = async (type, id = null) => {
+            editMode = id;
+            let existingData = {};
+            if(id) {
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', type, id);
+                const snap = await getDocs(getCol(type)); // Simple fetch for edit
+                existingData = snap.docs.find(d => d.id === id).data();
+            }
+
+            const modal = document.createElement('div');
+            modal.id = "form-modal";
+            modal.className = "fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto";
+            
+            const isPenduduk = type === 'penduduk';
+            
+            modal.innerHTML = `
+                <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden animate-scaleIn">
+                    <div class="bg-emerald-700 p-6 text-white flex justify-between items-center">
+                        <div>
+                            <h3 class="font-black text-xl">${id ? 'Edit' : 'Tambah'} ${type.toUpperCase()}</h3>
+                            <p class="text-xs opacity-70">Lengkapi formulir di bawah ini dengan benar</p>
+                        </div>
+                        <button onclick="closeModal()"><i class="fas fa-times text-2xl"></i></button>
+                    </div>
+                    <form id="main-form" class="p-8 space-y-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div class="col-span-2">
+                                <label class="block text-xs font-black text-slate-500 uppercase mb-2">Pas Foto Penduduk</label>
+                                <div class="flex items-center gap-4">
+                                    <div id="img-preview" class="w-24 h-24 rounded-2xl bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden">
+                                        ${existingData.foto ? `<img src="${existingData.foto}" class="w-full h-full object-cover">` : `<i class="fas fa-camera text-slate-300 text-2xl"></i>`}
+                                    </div>
+                                    <input type="file" id="f_foto" class="text-xs file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 cursor-pointer">
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-xs font-black text-slate-500 uppercase mb-2">Nama Lengkap</label>
+                                <input type="text" id="f_nama" value="${existingData.nama || ''}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-black text-slate-500 uppercase mb-2">NIK</label>
+                                <input type="number" id="f_nik" value="${existingData.nik || ''}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" required>
+                            </div>
+
+                            ${isPenduduk ? `
+                                <div>
+                                    <label class="block text-xs font-black text-slate-500 uppercase mb-2">Jenis Kelamin</label>
+                                    <select id="f_jk" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none">
+                                        <option ${existingData.jk === 'Laki-laki' ? 'selected' : ''}>Laki-laki</option>
+                                        <option ${existingData.jk === 'Perempuan' ? 'selected' : ''}>Perempuan</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-black text-slate-500 uppercase mb-2">Agama</label>
+                                    <input type="text" id="f_agama" value="${existingData.agama || 'Kristen'}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-black text-slate-500 uppercase mb-2">Status Perkawinan</label>
+                                    <select id="f_status" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none">
+                                        <option ${existingData.status === 'Belum Kawin' ? 'selected' : ''}>Belum Kawin</option>
+                                        <option ${existingData.status === 'Kawin' ? 'selected' : ''}>Kawin</option>
+                                        <option ${existingData.status === 'Cerai Hidup' ? 'selected' : ''}>Cerai Hidup</option>
+                                        <option ${existingData.status === 'Cerai Mati' ? 'selected' : ''}>Cerai Mati</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-black text-slate-500 uppercase mb-2">Pekerjaan</label>
+                                    <input type="text" id="f_pekerjaan" value="${existingData.pekerjaan || 'Belum Bekerja'}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none">
+                                </div>
+                            ` : `
+                                <div class="col-span-2">
+                                    <label class="block text-xs font-black text-slate-500 uppercase mb-2">Jabatan</label>
+                                    <input type="text" id="f_jabatan" value="${existingData.jabatan || ''}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="Contoh: Sekretaris Desa">
+                                </div>
+                            `}
+                        </div>
+                        <div class="flex justify-end gap-3 pt-4">
+                            <button type="button" onclick="closeModal()" class="px-6 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition">Batal</button>
+                            <button type="submit" class="px-10 py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition active:scale-95">Simpan Data</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+            document.body.appendChild(modal);
+
+            document.getElementById('main-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const btn = e.target.querySelector('button[type="submit"]');
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Memproses...';
+
+                try {
+                    let fotoUrl = existingData.foto || '';
+                    const file = document.getElementById('f_foto').files[0];
+                    if(file) fotoUrl = await toBase64(file);
+
+                    const data = {
+                        nama: document.getElementById('f_nama').value,
+                        nik: document.getElementById('f_nik').value,
+                        foto: fotoUrl,
+                        updatedAt: new Date().toISOString()
+                    };
+
+                    if(isPenduduk) {
+                        data.jk = document.getElementById('f_jk').value;
+                        data.agama = document.getElementById('f_agama').value;
+                        data.status = document.getElementById('f_status').value;
+                        data.pekerjaan = document.getElementById('f_pekerjaan').value;
+                        data.alamat = "Wiyugobak";
+                        data.kecamatan = "Kobakma";
+                        data.kabupaten = "Mamberamo Tengah";
+                        data.kewarganegaraan = "INDONESIA";
+                        data.berlaku = "SEUMUR HIDUP";
+                    } else {
+                        data.jabatan = document.getElementById('f_jabatan').value;
+                    }
+
+                    if(id) {
+                        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', type, id), data);
+                        showToast("Data diperbarui!", "success");
+                    } else {
+                        await addDoc(getCol(type), data);
+                        showToast("Data ditambahkan!", "success");
+                    }
+                    closeModal();
+                } catch (err) {
+                    showToast("Kesalahan: " + err.message, "error");
+                    btn.disabled = false;
+                    btn.innerText = "Simpan Data";
+                }
+            };
+        };
+
+        window.closeModal = () => {
+            const m = document.getElementById('form-modal');
+            if(m) m.remove();
+        };
+
+        window.handleDelete = async (col, id) => {
+            if(confirm("Apakah Anda yakin ingin menghapus data ini? Tindakan ini tidak dapat dibatalkan.")) {
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', col, id));
+                    showToast("Data berhasil dihapus.", "success");
+                } catch (e) { showToast(e.message, "error"); }
+            }
+        };
+
+        // --- LAPORAN KEUANGAN ---
+        function renderKeuangan() {
+            const container = document.getElementById('main-content');
+            container.innerHTML = `
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div class="bg-white p-8 rounded-3xl shadow-sm border space-y-6">
+                        <h3 class="font-black text-xl text-slate-800 uppercase tracking-wide">Input Transaksi Keuangan</h3>
+                        <form id="keu-form" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-black text-slate-500 uppercase mb-1">Tahun Anggaran</label>
+                                <select id="k_tahun" class="w-full p-3 bg-slate-50 border rounded-xl outline-none">
+                                    <option>2026</option><option>2027</option><option>2028</option><option>2029</option><option>2030</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-black text-slate-500 uppercase mb-1">Nama Penerima / Pihak Kedua</label>
+                                <input type="text" id="k_penerima" class="w-full p-3 bg-slate-50 border rounded-xl outline-none" required placeholder="Contoh: Kontraktor / Kelompok Tani">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-black text-slate-500 uppercase mb-1">Jumlah Transaksi (Rp)</label>
+                                <input type="number" id="k_jumlah" class="w-full p-3 bg-slate-50 border rounded-xl outline-none" required placeholder="50000000">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-black text-slate-500 uppercase mb-1">Keterangan Kegiatan</label>
+                                <textarea id="k_info" class="w-full p-3 bg-slate-50 border rounded-xl outline-none h-24" placeholder="Penjelasan singkat penggunaan dana"></textarea>
+                            </div>
+                            <button type="submit" class="w-full bg-emerald-600 text-white py-3 rounded-xl font-black hover:bg-emerald-700 transition">SIMPAN TRANSAKSI</button>
+                        </form>
+                    </div>
+
+                    <div class="bg-white p-8 rounded-3xl shadow-sm border overflow-hidden">
+                        <h3 class="font-black text-xl text-slate-800 uppercase mb-6 flex items-center gap-2">
+                            <i class="fas fa-list-check text-emerald-600"></i> Daftar Transaksi
+                        </h3>
+                        <div class="overflow-y-auto max-h-[500px] space-y-3 pr-2 custom-scrollbar" id="keu-list">
+                            <p class="text-center py-10 opacity-50">Memuat data...</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('keu-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const data = {
+                    tahun: document.getElementById('k_tahun').value,
+                    penerima: document.getElementById('k_penerima').value,
+                    jumlah: document.getElementById('k_jumlah').value,
+                    info: document.getElementById('k_info').value,
+                    createdAt: new Date().toISOString()
+                };
+                await addDoc(getCol('keuangan'), data);
+                showToast("Transaksi berhasil dicatat!", "success");
+                e.target.reset();
+            };
+
+            onSnapshot(getCol('keuangan'), snap => {
+                const list = document.getElementById('keu-list');
+                list.innerHTML = '';
+                if(snap.empty) {
+                    list.innerHTML = '<div class="text-center py-10 text-slate-400">Belum ada transaksi tercatat.</div>';
+                    return;
+                }
+                snap.forEach(d => {
+                    const k = d.data();
+                    list.innerHTML += `
+                        <div class="p-4 border border-slate-100 rounded-2xl bg-slate-50/50 hover:bg-white transition group relative">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <span class="text-[10px] bg-emerald-100 text-emerald-700 font-black px-2 py-0.5 rounded-full mb-1 inline-block uppercase">${k.tahun}</span>
+                                    <h4 class="font-bold text-slate-800">${k.penerima}</h4>
+                                    <p class="text-xs text-slate-500 mt-1">${k.info || '-'}</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="font-black text-emerald-700">Rp ${Number(k.jumlah).toLocaleString('id-ID')}</p>
+                                    <button onclick="handleDelete('keuangan', '${d.id}')" class="text-red-300 hover:text-red-500 transition ml-2"><i class="fas fa-trash-alt text-[10px]"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+            });
+        }
+
+        // --- LAPORAN PEMBANGUNAN ---
+        function renderPembangunan() {
+            const container = document.getElementById('main-content');
+            container.innerHTML = `
+                <div class="space-y-8 animate-fadeIn">
+                    <div class="bg-white p-8 rounded-3xl shadow-sm border flex justify-between items-center">
+                        <div>
+                            <h3 class="font-black text-2xl text-slate-800">DOKUMENTASI PEMBANGUNAN</h3>
+                            <p class="text-slate-500">Mencatat progres fisik dan infrastruktur desa</p>
+                        </div>
+                        <button onclick="showPemForm()" class="bg-emerald-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-emerald-700 shadow-lg shadow-emerald-600/20">
+                            <i class="fas fa-plus"></i> Input Kegiatan Baru
+                        </button>
+                    </div>
+
+                    <div id="pem-grid" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <p class="col-span-3 text-center py-20 opacity-50 italic">Memuat galeri pembangunan...</p>
+                    </div>
+                </div>
+            `;
+
+            onSnapshot(getCol('pembangunan'), snap => {
+                const grid = document.getElementById('pem-grid');
+                grid.innerHTML = '';
+                if(snap.empty) {
+                    grid.innerHTML = '<div class="col-span-3 py-20 text-center text-slate-400">Belum ada dokumentasi pembangunan desa.</div>';
+                    return;
+                }
+                snap.forEach(d => {
+                    const b = d.data();
+                    grid.innerHTML += `
+                        <div class="bg-white rounded-3xl shadow-sm border overflow-hidden group hover:shadow-xl transition-all duration-300">
+                            <div class="h-48 overflow-hidden relative">
+                                <img src="${b.foto}" class="w-full h-full object-cover group-hover:scale-110 transition duration-500">
+                                <div class="absolute top-4 right-4 flex gap-2">
+                                    <button onclick="handleDelete('pembangunan', '${d.id}')" class="w-8 h-8 rounded-lg bg-black/40 text-white backdrop-blur-md hover:bg-red-600 transition"><i class="fas fa-trash text-xs"></i></button>
+                                </div>
+                            </div>
+                            <div class="p-6">
+                                <h4 class="font-black text-slate-800 leading-tight mb-2">${b.nama}</h4>
+                                <p class="text-sm text-slate-600 mb-4 line-clamp-2">${b.nik || 'Tidak ada keterangan tambahan'}</p>
+                                <div class="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase">
+                                    <i class="fas fa-calendar"></i> ${new Date(b.createdAt).toLocaleDateString('id-ID')}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+            });
+        }
+
+        window.showPemForm = () => {
+            const modal = document.createElement('div');
+            modal.id = 'pem-modal';
+            modal.className = "fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4";
+            modal.innerHTML = `
+                <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden animate-scaleIn">
+                    <div class="bg-emerald-600 p-6 text-white font-bold text-lg">Input Dokumentasi Kegiatan</div>
+                    <form id="pem-form" class="p-8 space-y-4">
+                        <div>
+                            <label class="block text-xs font-black text-slate-500 uppercase mb-1">Foto Kegiatan</label>
+                            <input type="file" id="p_foto" class="w-full border p-2 rounded-xl" required>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-black text-slate-500 uppercase mb-1">Nama / Jenis Kegiatan</label>
+                            <input type="text" id="p_nama" class="w-full border p-3 rounded-xl" placeholder="Contoh: Pembangunan Drainase" required>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-black text-slate-500 uppercase mb-1">Keterangan / Progress (%)</label>
+                            <textarea id="p_info" class="w-full border p-3 rounded-xl h-24" placeholder="Detail kemajuan pekerjaan..."></textarea>
+                        </div>
+                        <div class="flex justify-end gap-2 pt-4">
+                            <button type="button" onclick="document.getElementById('pem-modal').remove()" class="px-6 py-2">Batal</button>
+                            <button type="submit" class="bg-emerald-600 text-white px-8 py-2 rounded-xl font-bold">SIMPAN</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+            document.body.appendChild(modal);
+
+            document.getElementById('pem-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const file = document.getElementById('p_foto').files[0];
+                const foto = await toBase64(file);
+                await addDoc(getCol('pembangunan'), {
+                    nama: document.getElementById('p_nama').value,
+                    nik: document.getElementById('p_info').value, // reuse 'nik' field for info consistency in list render
+                    foto: foto,
+                    createdAt: new Date().toISOString()
+                });
+                showToast("Berhasil disimpan!", "success");
+                document.getElementById('pem-modal').remove();
+            };
+        };
+
+        // --- SISTEM SURAT ---
+        function renderSuratSystem() {
+            const container = document.getElementById('main-content');
+            container.innerHTML = `
+                <div class="bg-white p-8 rounded-3xl shadow-sm border mb-8">
+                    <h3 class="font-black text-xl text-slate-800 mb-2 uppercase">Layanan Administrasi Desa</h3>
+                    <p class="text-sm text-slate-500">Pilih jenis surat dan masukkan NIK penduduk untuk mencetak otomatis.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    ${renderSuratCard('USAHA', 'Suket Keterangan Usaha', 'fas fa-store', 'emerald')}
+                    ${renderSuratCard('PINDAH', 'Suket Keterangan Pindah', 'fas fa-truck-ramp-box', 'blue')}
+                    ${renderSuratCard('TIDAK_MAMPU', 'Suket Tidak Mampu (SKTM)', 'fas fa-hand-holding-heart', 'red')}
+                </div>
+            `;
+        }
+
+        function renderSuratCard(key, title, icon, color) {
+            return `
+                <div class="bg-white p-8 rounded-3xl shadow-sm border hover:shadow-xl transition-all duration-300 group">
+                    <div class="w-16 h-16 rounded-2xl bg-${color}-100 text-${color}-600 flex items-center justify-center text-3xl mb-6 group-hover:scale-110 transition">
+                        <i class="${icon}"></i>
+                    </div>
+                    <h4 class="font-black text-slate-800 text-lg mb-4">${title}</h4>
+                    <div class="space-y-3">
+                        <input type="number" id="nik_${key}" class="w-full p-3 bg-slate-50 border rounded-xl text-xs outline-none" placeholder="Masukkan NIK Penduduk...">
+                        <button onclick="cetakSurat('${key}')" class="w-full bg-slate-800 text-white py-3 rounded-xl font-bold text-sm hover:bg-emerald-600 transition flex items-center justify-center gap-2">
+                            <i class="fas fa-print"></i> CETAK SURAT
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        window.cetakSurat = async (key) => {
+            const nik = document.getElementById(`nik_${key}`).value;
+            if(!nik) return showToast("Masukkan NIK terlebih dahulu!", "error");
+
+            const snap = await getDocs(getCol('penduduk'));
+            const p = snap.docs.find(d => d.data().nik === nik);
+
+            if(!p) return showToast("Data penduduk dengan NIK tersebut tidak ditemukan!", "error");
+            
+            const data = p.data();
+            const win = window.open('', '_blank');
+            win.document.write(`
+                <html>
+                <head>
+                    <title>Surat Keterangan Desa</title>
+                    <style>
+                        body { font-family: 'Times New Roman', serif; padding: 40px; color: #000; line-height: 1.5; }
+                        .header { display: flex; align-items: center; border-bottom: 4px double #000; padding-bottom: 15px; margin-bottom: 30px; }
+                        .header img { width: 80px; height: 100px; margin-right: 20px; }
+                        .header-text { text-align: center; flex: 1; }
+                        .header-text h2 { margin: 0; font-size: 18pt; text-transform: uppercase; }
+                        .header-text h1 { margin: 0; font-size: 20pt; text-transform: uppercase; }
+                        .header-text p { margin: 0; font-size: 10pt; }
+                        .judul { text-align: center; text-decoration: underline; font-weight: bold; margin-bottom: 5px; font-size: 14pt; }
+                        .nomor { text-align: center; margin-bottom: 40px; }
+                        .isi { text-align: justify; margin-bottom: 20px; }
+                        .data-row { display: flex; margin-bottom: 8px; }
+                        .data-label { width: 180px; }
+                        .data-colon { width: 20px; }
+                        .ttd { margin-top: 60px; float: right; text-align: center; width: 250px; }
+                        @media print { .no-print { display: none; } }
+                    </style>
+                </head>
+                <body>
+                    <div class="no-print" style="background: #fdf6e3; padding: 10px; border-radius: 5px; margin-bottom: 20px; text-align: center;">
+                        <button onclick="window.print()" style="padding: 10px 20px; cursor: pointer;">KLIK DISINI UNTUK PRINT</button>
+                    </div>
+                    <div class="header">
+                        <img src="${LOGO_KAB}">
+                        <div class="header-text">
+                            <h2>Pemerintah Kabupaten Mamberamo Tengah</h2>
+                            <h2>Distrik Kobakma</h2>
+                            <h1>KANTOR KEPALA DESA WIYUGOBAK</h1>
+                            <p>Alamat: Desa Wiyugobak, Distrik Kobakma, Kode Pos 99511</p>
+                        </div>
+                        <img src="${LOGO_SURAT}">
+                    </div>
+                    <div class="judul">SURAT KETERANGAN ${key.replace('_', ' ')}</div>
+                    <div class="nomor">Nomor: 140 / ${Math.floor(Math.random()*100)} / WK / ${new Date().getFullYear()}</div>
+                    
+                    <div class="isi">Yang bertanda tangan di bawah ini Kepala Desa Wiyugobak, Distrik Kobakma, Kabupaten Mamberamo Tengah, menerangkan bahwa:</div>
+                    
+                    <div class="data-row"><div class="data-label">Nama Lengkap</div><div class="data-colon">:</div><div class="data-val"><b>${data.nama}</b></div></div>
+                    <div class="data-row"><div class="data-label">NIK</div><div class="data-colon">:</div><div class="data-val">${data.nik}</div></div>
+                    <div class="data-row"><div class="data-label">Jenis Kelamin</div><div class="data-colon">:</div><div class="data-val">${data.jk}</div></div>
+                    <div class="data-row"><div class="data-label">Agama</div><div class="data-colon">:</div><div class="data-val">${data.agama}</div></div>
+                    <div class="data-row"><div class="data-label">Pekerjaan</div><div class="data-colon">:</div><div class="data-val">${data.pekerjaan}</div></div>
+                    <div class="data-row"><div class="data-label">Alamat</div><div class="data-colon">:</div><div class="data-val">Desa Wiyugobak, Kec. Kobakma</div></div>
+
+                    <div class="isi" style="margin-top:20px;">
+                        Bahwa nama tersebut di atas benar-benar penduduk Desa Wiyugobak yang berkelakuan baik dan benar saat ini memerlukan 
+                        <b>Surat Keterangan ${key.replace('_', ' ')}</b> untuk keperluan administrasi yang bersangkutan.
+                    </div>
+
+                    <div class="isi">Demikian surat keterangan ini dibuat untuk dipergunakan sebagaimana mestinya.</div>
+
+                    <div class="ttd">
+                        <p>Wiyugobak, ${new Date().toLocaleDateString('id-ID', {day:'numeric', month:'long', year:'numeric'})}</p>
+                        <p>Kepala Desa Wiyugobak,</p>
+                        <br><br><br><br>
+                        <p><b>..........................................</b></p>
+                    </div>
+                </body>
+                </html>
+            `);
+            win.document.close();
+        };
+
+        // --- UTILS ---
+        function showToast(msg, type) {
+            const t = document.createElement('div');
+            t.className = `fixed bottom-8 right-8 px-8 py-4 rounded-2xl shadow-2xl z-[9999] animate-slideIn ${type === 'error' ? 'bg-red-600 text-white' : 'bg-emerald-800 text-white'}`;
+            t.innerHTML = `<div class="flex items-center gap-3 font-bold"><i class="fas ${type === 'error' ? 'fa-circle-xmark' : 'fa-circle-check'}"></i> ${msg}</div>`;
+            document.body.appendChild(t);
+            setTimeout(() => {
+                t.classList.add('animate-slideOut');
+                setTimeout(() => t.remove(), 500);
+            }, 3000);
+        }
+
+        function toBase64(file) {
+            return new Promise((r, j) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => r(reader.result);
+                reader.onerror = e => j(e);
+            });
+        }
+
+        onAuthStateChanged(auth, (u) => { if(u) { currentUser = u; renderApp(); } });
+        window.onload = () => initAuth();
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 10px; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100px); opacity: 0; } }
+        .animate-fadeIn { animation: fadeIn 0.4s ease-out forwards; }
+        .animate-scaleIn { animation: scaleIn 0.3s ease-out forwards; }
+        .animate-slideIn { animation: slideIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        .animate-slideOut { animation: slideOut 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+    <div id="app-root">
+        <div class="h-screen w-full flex flex-col items-center justify-center bg-emerald-950 text-white">
+            <div class="relative w-24 h-24 mb-6">
+                <div class="absolute inset-0 border-4 border-emerald-500/20 rounded-full"></div>
+                <div class="absolute inset-0 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <p class="font-black tracking-widest animate-pulse uppercase text-sm">Mengakses Server Desa Wiyugobak...</p>
+        </div>
+    </div>
+</body>
+</html>
